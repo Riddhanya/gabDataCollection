@@ -17,6 +17,8 @@ from selenium.webdriver.common.keys import Keys
 from collections import Counter, defaultdict
 import string
 import hashlib
+import argparse
+import getpass
 
 # Try to import NLTK, but provide fallback if not available
 try:
@@ -883,16 +885,13 @@ class EnhancedGabScraper:
         return ' '.join(filtered_words).strip()
 
 
-def run_comprehensive_scraper():
+def run_comprehensive_scraper(username: str, password: str):
     """Run the comprehensive scraper with guaranteed data generation"""
     print("="*80)
     print("COMPREHENSIVE GAB SCRAPER - FIXED VERSION")
     print("="*80)
     
-    USERNAME = "dot_tee@yahoo.com"
-    PASSWORD = "iLoveKokil"
-    
-    scraper = EnhancedGabScraper(USERNAME, PASSWORD)
+    scraper = EnhancedGabScraper(username, password)
     
     try:
         print("Attempting to login to Gab...")
@@ -996,16 +995,13 @@ def run_comprehensive_scraper():
         scraper.close()
 
 
-def quick_test():
+def quick_test(username: str, password: str):
     """Quick test with guaranteed output"""
     print("="*80)
     print("QUICK TEST - GAB SCRAPER (GUARANTEED RESULTS)")
     print("="*80)
     
-    USERNAME = "dot_tee@yahoo.com"
-    PASSWORD = "iLoveKokil"
-    
-    scraper = EnhancedGabScraper(USERNAME, PASSWORD)
+    scraper = EnhancedGabScraper(username, password)
     
     try:
         # Skip login for quick test, just generate sample data
@@ -1055,29 +1051,31 @@ def quick_test():
 
 
 def main():
-    """Main function with user choice"""
-    print("="*80)
-    print("GAB SCRAPER - FIXED VERSION")
-    print("="*80)
-    print("Choose your option:")
-    print("  [1] Quick Test (sample data, guaranteed results)")
-    print("  [2] Full Scraper (attempts real scraping + samples)")
-    print("  [q] Quit")
-    
-    while True:
-        choice = input("\nEnter your choice [1/2/q]: ").strip().lower()
-        
-        if choice in ['1', 'quick', 't']:
-            quick_test()
-            break
-        elif choice in ['2', 'full', 'f']:
-            run_comprehensive_scraper()
-            break
-        elif choice in ['q', 'quit', 'exit']:
-            print("Goodbye!")
-            break
-        else:
-            print("Invalid choice. Please enter 1, 2, or q.")
+    """Non-interactive CLI entrypoint. Only prompts for missing username/password."""
+    parser = argparse.ArgumentParser(description="Gab scraper - non-interactive")
+    parser.add_argument("--mode", choices=["quick", "full"], default="quick", help="Run mode: quick (sample) or full")
+    parser.add_argument("--username", default=os.getenv("GAB_USERNAME", ""), help="Gab username/email")
+    parser.add_argument("--password", default=os.getenv("GAB_PASSWORD", ""), help="Gab password")
+    parser.add_argument("--no-prompt", action="store_true", help="Fail if creds missing instead of prompting")
+    args = parser.parse_args()
+
+    username = args.username
+    password = args.password
+
+    # Only prompt for username/password if missing and prompting allowed
+    if not username:
+        if args.no_prompt:
+            raise SystemExit("Username missing. Provide via --username or GAB_USERNAME.")
+        username = input("Username/Email: ").strip()
+    if not password:
+        if args.no_prompt:
+            raise SystemExit("Password missing. Provide via --password or GAB_PASSWORD.")
+        password = getpass.getpass("Password: ")
+
+    if args.mode == "quick":
+        quick_test(username, password)
+    else:
+        run_comprehensive_scraper(username, password)
 
 
 if __name__ == "__main__":
