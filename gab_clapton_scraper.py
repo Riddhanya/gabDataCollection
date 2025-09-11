@@ -354,9 +354,76 @@ def write_jsonl(path: str, rows: List[Dict[str, Any]]) -> None:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
+# --- CLAPTON-style keyword support -------------------------------------------------
+
+DEFAULT_CLAPTON_KEYWORDS: List[str] = [
+    # Elections & politics
+    "election", "elections", "vote", "voting", "ballot", "ballots", "election fraud",
+    "politics", "political", "campaign", "campaign finance", "lobbying",
+
+    # US parties & ideologies
+    "Republican", "Democrat", "GOP", "RNC", "DNC", "liberal", "conservative",
+    "left wing", "right wing", "far right", "far left",
+
+    # Figures (general placeholders; adjust as needed)
+    "Trump", "Biden", "Harris", "Obama", "Clinton", "DeSantis", "RFK Jr", "Kennedy",
+    "Pelosi", "Schumer", "McConnell", "AOC", "Greene",
+
+    # Movements/slogans
+    "MAGA", "America First", "Drain the Swamp", "Stop the Steal",
+
+    # Policy topics
+    "immigration", "border", "border wall", "asylum", "deportation",
+    "economy", "inflation", "jobs", "taxes", "budget", "deficit",
+    "healthcare", "Medicare", "Medicaid", "Obamacare",
+    "guns", "Second Amendment", "gun control",
+    "abortion", "Roe v Wade",
+    "education", "school choice",
+    "climate", "energy", "oil", "gas", "green energy",
+    "foreign policy", "Ukraine", "Russia", "China", "Israel", "Middle East",
+
+    # Media / information
+    "fake news", "mainstream media", "MSM", "censorship", "free speech",
+
+    # Institutions
+    "Congress", "Senate", "House", "Supreme Court", "SCOTUS", "White House",
+
+    # Hashtags (a small seed set)
+    "#MAGA", "#USA", "#election", "#politics", "#immigration", "#2A",
+]
+
+
+def load_keywords(keywords_file: Optional[str]) -> List[str]:
+    """Load keywords from file (one per line), merged with defaults; de-duplicate preserving order."""
+    keywords: List[str] = []
+    if keywords_file and os.path.exists(keywords_file):
+        try:
+            with open(keywords_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    keywords.append(line)
+        except Exception:
+            pass
+
+    # Merge file-provided (first) then defaults; preserve order uniquely
+    merged = list(dict.fromkeys(keywords + DEFAULT_CLAPTON_KEYWORDS))
+    return merged
+
+
+def perform_search_for_query(driver: Any, q: str, max_posts: int, delay_min: float, delay_max: float) -> List[Dict[str, Any]]:
+    encoded = re.sub(r"\s+", "%20", q)
+    url = f"https://gab.com/search?q={encoded}&type=status"
+    if not navigate(driver, url, delay_min, delay_max, retries=3):
+        return []
+    posts = scroll_and_collect(driver, q, max_posts, delay_min, delay_max)
+    return posts
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Gab Selenium scraper (CLAPTON-style JSONL)")
-    parser.add_argument("--query", required=True, help="Search query or hashtag (include #)")
+    parser.add_argument("--query", required=False, help="Search query or hashtag (include #)")
     parser.add_argument("--type", default="status", choices=["status"], help="Search type")
     parser.add_argument("--max-posts", type=int, default=200, help="Maximum posts to collect")
     parser.add_argument("--output", required=True, help="Output JSONL file path")
@@ -366,6 +433,14 @@ def main() -> None:
     parser.add_argument("--password", default=os.getenv("GAB_PASSWORD", ""), help="Gab password")
     parser.add_argument("--delay-min", type=float, default=1.5, help="Min delay between actions")
     parser.add_argument("--delay-max", type=float, default=3.5, help="Max delay between actions")
+    # Auto/batch mode
+    parser.add_argument("--auto", action="store_true", help="Iterate over built-in CLAPTON keywords and search")
+    parser.add_argument("--keywords-file", default=None, help="Optional newline-delimited keywords to include")
+    parser.add_argument("--max-keywords", type=int, default=0, help="Limit number of keywords (0 = no limit)")
+    parser.add_argument("--shuffle", action="store_true", help="Shuffle keyword order before running")
+    parser.add_argument("--pause-min", type=float, default=5.0, help="Min pause between keywords (seconds)")
+    parser.add_argument("--pause-max", type=float, default=12.0, help="Max pause between keywords (seconds)")
+    parser.add_argument("--max-posts-per-keyword", type=int, default=0, help="Override per-keyword max posts (0 = use --max-posts)")
 
     args = parser.parse_args()
 
@@ -377,41 +452,89 @@ def main() -> None:
         if args.login:
             logged_in = try_login(driver, args.username, args.password, args.delay_min, args.delay_max)
             # Proceed even if login fails; we will collect anonymously
+        # Validate mode
+        if not args.auto and not args.query:
+            raise SystemExit("Provide --query for single search or use --auto for batch mode.")
 
-        q = args.query.strip()
-        encoded = re.sub(r"\s+", "%20", q)
-        url = f"https://gab.com/search?q={encoded}&type=status"
-        if not navigate(driver, url, args.delay_min, args.delay_max, retries=3):
-            raise RuntimeError("Failed to load search page")
+        total_saved = 0
+        if args.auto:
+            keywords = load_keywords(args.keywords_file)
+            if args.shuffle:
+                random.shuffle(keywords)
+            if args.max_keywords and args.max_keywords > 0:
+                keywords = keywords[:args.max_keywords]
 
-        posts = scroll_and_collect(driver, q, args.max_posts, args.delay_min, args.delay_max)
-        if not posts:
-            # Emit a minimal stub so pipeline doesn't break
-            stub = {
-                "platform": "gab",
-                "post_id": None,
-                "url": None,
-                "text": "",
-                "username": None,
-                "display_name": None,
-                "author_url": None,
-                "created_at": None,
-                "collected_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-                "like_count": 0,
-                "reply_count": 0,
-                "repost_count": 0,
-                "hashtags": [],
-                "mentions": [],
-                "urls": [],
-                "media_urls": [],
-                "query": q,
-                "source_type": "search-status",
-            }
-            write_jsonl(args.output, [stub])
+            per_kw_max = args.max_posts_per_keyword if args.max_posts_per_keyword and args.max_posts_per_keyword > 0 else args.max_posts
+            print(f"Running auto mode over {len(keywords)} keywords; up to {per_kw_max} posts per keyword")
+
+            for idx, kw in enumerate(keywords, 1):
+                try:
+                    posts = perform_search_for_query(driver, kw.strip(), per_kw_max, args.delay_min, args.delay_max)
+                except Exception:
+                    posts = []
+
+                if not posts:
+                    stub = {
+                        "platform": "gab",
+                        "post_id": None,
+                        "url": None,
+                        "text": "",
+                        "username": None,
+                        "display_name": None,
+                        "author_url": None,
+                        "created_at": None,
+                        "collected_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                        "like_count": 0,
+                        "reply_count": 0,
+                        "repost_count": 0,
+                        "hashtags": [],
+                        "mentions": [],
+                        "urls": [],
+                        "media_urls": [],
+                        "query": kw,
+                        "source_type": "search-status",
+                    }
+                    write_jsonl(args.output, [stub])
+                    print(f"[{idx}/{len(keywords)}] {kw}: 0 posts (stub written)")
+                else:
+                    write_jsonl(args.output, posts)
+                    total_saved += len(posts)
+                    print(f"[{idx}/{len(keywords)}] {kw}: {len(posts)} posts saved")
+
+                # Pause between keywords
+                human_sleep(args.pause_min, args.pause_max)
+
+            print(f"Auto mode complete. Total posts saved: {total_saved} to {args.output}")
         else:
-            write_jsonl(args.output, posts)
+            q = args.query.strip()
+            posts = perform_search_for_query(driver, q, args.max_posts, args.delay_min, args.delay_max)
+            if not posts:
+                # Emit a minimal stub so pipeline doesn't break
+                stub = {
+                    "platform": "gab",
+                    "post_id": None,
+                    "url": None,
+                    "text": "",
+                    "username": None,
+                    "display_name": None,
+                    "author_url": None,
+                    "created_at": None,
+                    "collected_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                    "like_count": 0,
+                    "reply_count": 0,
+                    "repost_count": 0,
+                    "hashtags": [],
+                    "mentions": [],
+                    "urls": [],
+                    "media_urls": [],
+                    "query": q,
+                    "source_type": "search-status",
+                }
+                write_jsonl(args.output, [stub])
+            else:
+                write_jsonl(args.output, posts)
 
-        print(f"Saved {len(posts)} posts to {args.output}")
+            print(f"Saved {len(posts)} posts to {args.output}")
     finally:
         try:
             driver.quit()
