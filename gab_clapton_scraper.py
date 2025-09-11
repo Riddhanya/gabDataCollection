@@ -356,35 +356,55 @@ def write_jsonl(path: str, rows: List[Dict[str, Any]]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Gab Selenium scraper (CLAPTON-style JSONL)")
-    parser.add_argument("--query", required=True, help="Search query or hashtag (include #)")
-    parser.add_argument("--type", default="status", choices=["status"], help="Search type")
-    parser.add_argument("--max-posts", type=int, default=200, help="Maximum posts to collect")
-    parser.add_argument("--output", required=True, help="Output JSONL file path")
-    parser.add_argument("--headless", action="store_true", help="Run Chrome in headless mode")
-    parser.add_argument("--login", action="store_true", help="Attempt to login before scraping")
     parser.add_argument("--username", default=os.getenv("GAB_USERNAME", ""), help="Gab username/email")
     parser.add_argument("--password", default=os.getenv("GAB_PASSWORD", ""), help="Gab password")
+    parser.add_argument("--query", default=None, help="Optional search query or hashtag (include #)")
+    parser.add_argument("--type", default="status", choices=["status"], help="Search type")
+    parser.add_argument("--max-posts", type=int, default=200, help="Maximum posts to collect")
+    parser.add_argument("--output", default=None, help="Output JSONL file path (default auto)")
+    parser.add_argument("--headless", action="store_true", help="Run Chrome in headless mode")
     parser.add_argument("--delay-min", type=float, default=1.5, help="Min delay between actions")
     parser.add_argument("--delay-max", type=float, default=3.5, help="Max delay between actions")
 
     args = parser.parse_args()
 
-    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+    # Derive output path if not provided
+    if not args.output:
+        ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        args.output = os.path.abspath(f"gab_{ts}.jsonl")
+    else:
+        args.output = os.path.abspath(args.output)
+
+    os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
     driver = build_driver(headless=args.headless)
 
     try:
-        if args.login:
+        logged_in = False
+        if args.username and args.password:
             logged_in = try_login(driver, args.username, args.password, args.delay_min, args.delay_max)
-            # Proceed even if login fails; we will collect anonymously
 
-        q = args.query.strip()
-        encoded = re.sub(r"\s+", "%20", q)
-        url = f"https://gab.com/search?q={encoded}&type=status"
+        if args.query:
+            q = args.query.strip()
+            encoded = re.sub(r"\s+", "%20", q)
+            url = f"https://gab.com/search?q={encoded}&type=status"
+            source_type = "search-status"
+        else:
+            # Default to home feed (if logged in) or landing feed
+            q = None
+            url = "https://gab.com/"
+            source_type = "home-feed" if logged_in else "landing"
+
         if not navigate(driver, url, args.delay_min, args.delay_max, retries=3):
-            raise RuntimeError("Failed to load search page")
+            raise RuntimeError("Failed to load target page")
 
-        posts = scroll_and_collect(driver, q, args.max_posts, args.delay_min, args.delay_max)
+        posts = scroll_and_collect(driver, q or "", args.max_posts, args.delay_min, args.delay_max)
+
+        # Normalize source_type/query fields
+        for p in posts:
+            p["source_type"] = source_type
+            p["query"] = q
+
         if not posts:
             # Emit a minimal stub so pipeline doesn't break
             stub = {
@@ -405,7 +425,7 @@ def main() -> None:
                 "urls": [],
                 "media_urls": [],
                 "query": q,
-                "source_type": "search-status",
+                "source_type": source_type,
             }
             write_jsonl(args.output, [stub])
         else:
