@@ -354,12 +354,41 @@ def write_jsonl(path: str, rows: List[Dict[str, Any]]) -> None:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
+def clapton_default_keywords() -> List[str]:
+    """Built-in CLAPTON-style political keywords/hashtags to search automatically."""
+    return [
+        # General politics
+        "politics", "election", "vote", "voting", "campaign",
+        # US parties/labels
+        "republican", "democrat", "conservative", "liberal",
+        # Prominent figures/topics
+        "Trump", "Biden", "Harris", "MAGA", "America First",
+        # Issues
+        "immigration", "border", "economy", "inflation", "taxes", "healthcare",
+        "abortion", "guns", "second amendment", "climate", "covid", "vaccine",
+        # Institutions
+        "Congress", "Senate", "House", "Supreme Court",
+        # Hashtag variants
+        "#MAGA", "#Election2024", "#Politics",
+    ]
+
+
+def _sanitize_filename(name: str) -> str:
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip())
+    return base.strip("._-") or "keyword"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Gab Selenium scraper (CLAPTON-style JSONL)")
-    parser.add_argument("--query", required=True, help="Search query or hashtag (include #)")
+    # Single-run flags
+    parser.add_argument("--query", help="Search query or hashtag (include #)")
     parser.add_argument("--type", default="status", choices=["status"], help="Search type")
     parser.add_argument("--max-posts", type=int, default=200, help="Maximum posts to collect")
-    parser.add_argument("--output", required=True, help="Output JSONL file path")
+    parser.add_argument("--output", help="Output JSONL file path (single-run)")
+    # Batch mode flags
+    parser.add_argument("--batch", action="store_true", help="Run over built-in CLAPTON keyword list")
+    parser.add_argument("--output-dir", help="Directory to write per-keyword JSONL files in batch mode")
+    # Common flags
     parser.add_argument("--headless", action="store_true", help="Run Chrome in headless mode")
     parser.add_argument("--login", action="store_true", help="Attempt to login before scraping")
     parser.add_argument("--username", default=os.getenv("GAB_USERNAME", ""), help="Gab username/email")
@@ -369,14 +398,77 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.batch:
+        if not args.output_dir:
+            raise SystemExit("--output-dir is required in --batch mode")
+        out_dir = os.path.abspath(args.output_dir)
+        os.makedirs(out_dir, exist_ok=True)
+
+        driver = build_driver(headless=args.headless)
+        try:
+            if args.login:
+                _ = try_login(driver, args.username, args.password, args.delay_min, args.delay_max)
+
+            keywords = clapton_default_keywords()
+            total_saved = 0
+            for kw in keywords:
+                q = kw.strip()
+                encoded = re.sub(r"\s+", "%20", q)
+                url = f"https://gab.com/search?q={encoded}&type=status"
+                if not navigate(driver, url, args.delay_min, args.delay_max, retries=3):
+                    print(f"Skip '{q}': failed to load page")
+                    continue
+
+                posts = scroll_and_collect(driver, q, args.max_posts, args.delay_min, args.delay_max)
+                fname = _sanitize_filename(q) + ".jsonl"
+                out_path = os.path.join(out_dir, fname)
+                if not posts:
+                    stub = {
+                        "platform": "gab",
+                        "post_id": None,
+                        "url": None,
+                        "text": "",
+                        "username": None,
+                        "display_name": None,
+                        "author_url": None,
+                        "created_at": None,
+                        "collected_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                        "like_count": 0,
+                        "reply_count": 0,
+                        "repost_count": 0,
+                        "hashtags": [],
+                        "mentions": [],
+                        "urls": [],
+                        "media_urls": [],
+                        "query": q,
+                        "source_type": "search-status",
+                    }
+                    write_jsonl(out_path, [stub])
+                    print(f"Saved 0 posts (stub) to {out_path}")
+                else:
+                    write_jsonl(out_path, posts)
+                    total_saved += len(posts)
+                    print(f"Saved {len(posts)} posts to {out_path}")
+
+            print(f"Batch complete. Total posts saved: {total_saved}")
+        finally:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+        return
+
+    # Single-run mode (backwards compatible)
+    if not args.query or not args.output:
+        raise SystemExit("--query and --output are required in single-run mode. Use --batch for automatic keywords.")
+
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
 
     driver = build_driver(headless=args.headless)
 
     try:
         if args.login:
-            logged_in = try_login(driver, args.username, args.password, args.delay_min, args.delay_max)
-            # Proceed even if login fails; we will collect anonymously
+            _ = try_login(driver, args.username, args.password, args.delay_min, args.delay_max)
 
         q = args.query.strip()
         encoded = re.sub(r"\s+", "%20", q)

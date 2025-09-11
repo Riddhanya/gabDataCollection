@@ -12,7 +12,7 @@ Chrome/Chromium is required. The script will auto-manage the driver via `webdriv
 
 ### Usage
 
-- Headless, anonymous search (statuses):
+- Headless, anonymous search (single run):
 ```bash
 python gab_clapton_scraper.py --query "immigration" --max-posts 200 --headless --output gab_immigration.jsonl
 ```
@@ -24,7 +24,13 @@ export GAB_PASSWORD="your_password"
 python gab_clapton_scraper.py --query "#MAGA" --max-posts 500 --headless --login --output gab_maga.jsonl
 ```
 
-Flags:
+- Automatic CLAPTON-style batch over built-in keywords (writes one JSONL per keyword):
+```bash
+export GAB_USERNAME="your_email"; export GAB_PASSWORD="your_password"
+python gab_clapton_scraper.py --batch --output-dir out/gab_batch --max-posts 200 --headless --login
+```
+
+Flags (single run):
 - `--query`: search term or hashtag (include leading `#` for hashtags)
 - `--type`: search type, default `status` (future: `user`, `group`)
 - `--max-posts`: maximum posts to collect
@@ -33,6 +39,11 @@ Flags:
 - `--username/--password`: explicit credentials (overrides env vars)
 - `--output`: JSONL output path
 - `--delay-min/--delay-max`: human-like random delays (seconds) between actions
+
+Flags (batch):
+- `--batch`: run across built-in CLAPTON keyword list
+- `--output-dir`: directory for per-keyword JSONL files
+- other flags shared with single run
 
 ### Output schema (CLAPTON-style JSONL)
 Each line is one post:
